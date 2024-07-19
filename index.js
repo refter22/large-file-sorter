@@ -3,7 +3,7 @@ const readline = require('readline')
 
 const INPUT_FILE = 'input.txt'
 const OUTPUT_FILE = 'output.txt'
-const CHUNK_SIZE = 100 * 1024 * 1024 // 100 МБ
+const CHUNK_SIZE = 10 * 1024 * 1024 // 10 МБ
 
 async function sortLargeFile() {
   const chunkFiles = await splitAndSortChunks()
@@ -56,23 +56,18 @@ async function sortChunk(filePath) {
   const content = await fs.promises.readFile(filePath, 'utf-8');
   const lines = content.split('\n').filter(line => line.trim() !== '');
   lines.sort((a, b) => a.localeCompare(b));
-  await fs.promises.writeFile(filePath, lines.join('\n') + '\n');
+  await fs.promises.writeFile(filePath, lines.join('\n'));
   console.log(`Отсортирован чанк: ${filePath}, строк: ${lines.length}`);
 }
 
 async function mergeChunks(chunkFiles) {
   const outputStream = fs.createWriteStream(OUTPUT_FILE, { highWaterMark: 1024 * 1024 });
-  const readers = chunkFiles.map((file) => createChunkReader(file));
-  const heap = new MinHeap(readers.length);
+  const readers = chunkFiles.map(() => null);
+  const heap = new MinHeap(chunkFiles.length);
 
-  // Инициализация кучи
-  for (let i = 0; i < readers.length; i++) {
-    if (typeof readers[i].next !== 'function') {
-      console.error(`Reader ${i} does not have a next function`);
-      continue;
-    }
-    const { value: line, done } = await readers[i].next();
-    if (!done && line !== undefined) {
+  for (let i = 0; i < chunkFiles.length; i++) {
+    const line = await getNextLine(i, chunkFiles, readers);
+    if (line !== null) {
       heap.insert(line, i);
     }
   }
@@ -88,37 +83,61 @@ async function mergeChunks(chunkFiles) {
   };
 
   let linesWritten = 0;
+  let lastLine = '';
 
   while (heap.size > 0) {
     const { value: minLine, readerIndex } = heap.extractMin();
 
-    if (typeof minLine === 'string' && minLine.trim() !== '') {
+    if (minLine !== lastLine) {
       outputBuffer += minLine + '\n';
       linesWritten++;
-    } else {
-      console.error('Неожиданный тип данных:', minLine);
-      continue;
+      lastLine = minLine;
     }
 
     if (outputBuffer.length >= 1024 * 1024) {
       flushBuffer();
     }
 
-    const { value: nextLine, done } = await readers[readerIndex].next();
-    if (!done && nextLine !== undefined) {
+    const nextLine = await getNextLine(readerIndex, chunkFiles, readers);
+    if (nextLine !== null) {
       heap.insert(nextLine, readerIndex);
     }
   }
 
+  if (outputBuffer.endsWith('\n')) {
+    outputBuffer = outputBuffer.slice(0, -1);
+  }
   flushBuffer();
   outputStream.end();
 
   console.log(`Записано строк: ${linesWritten}`);
 
   await new Promise((resolve) => outputStream.on('finish', resolve));
+
+  for (const reader of readers) {
+    if (reader) {
+      reader.close();
+    }
+  }
 }
 
-function createChunkReader(filePath) {
+async function getNextLine(index, chunkFiles, readers) {
+  if (!readers[index]) {
+    readers[index] = await openChunkReader(chunkFiles[index]);
+  }
+
+  const { value, done } = await readers[index].next();
+
+  if (done) {
+    readers[index].close();
+    readers[index] = null;
+    return null;
+  }
+
+  return value;
+}
+
+async function openChunkReader(filePath) {
   const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({
     input: fileStream,
@@ -126,7 +145,11 @@ function createChunkReader(filePath) {
   });
   const iterator = rl[Symbol.asyncIterator]();
   return {
-    next: () => iterator.next()
+    next: () => iterator.next(),
+    close: () => {
+      rl.close();
+      fileStream.close();
+    }
   };
 }
 
@@ -168,7 +191,7 @@ class MinHeap {
   bubbleUp(i) {
     while (i > 0) {
       const parent = Math.floor((i - 1) / 2);
-      if (this.heap[parent * 2] <= this.heap[i * 2]) break;
+      if (this.heap[parent * 2].localeCompare(this.heap[i * 2]) <= 0) break;
       this.swap(i, parent);
       i = parent;
     }
@@ -179,10 +202,10 @@ class MinHeap {
       let minIndex = i;
       const left = 2 * i + 1;
       const right = 2 * i + 2;
-      if (left < this.size && this.heap[left * 2] < this.heap[minIndex * 2]) {
+      if (left < this.size && this.heap[left * 2].localeCompare(this.heap[minIndex * 2]) < 0) {
         minIndex = left;
       }
-      if (right < this.size && this.heap[right * 2] < this.heap[minIndex * 2]) {
+      if (right < this.size && this.heap[right * 2].localeCompare(this.heap[minIndex * 2]) < 0) {
         minIndex = right;
       }
       if (minIndex === i) break;

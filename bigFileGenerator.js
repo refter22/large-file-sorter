@@ -2,47 +2,59 @@ const fs = require('fs');
 const crypto = require('crypto');
 
 const OUTPUT_FILE = 'input.txt';
-const FILE_SIZE_GB = 1; // Размер файла в гигабайтах
-const CHUNK_SIZE = 100 * 1024 * 1024; // 100 МБ
+const FILE_SIZE_MB = 100; // Размер файла в мегабайтах
+const CHUNK_SIZE = 1 * 1024 * 1024; // 1 МБ
 
 function generateRandomString(length) {
-  return crypto.randomBytes(Math.ceil(length / 2))
-    .toString('hex')
-    .slice(0, length);
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+{}[]|:;<>,.?/~`АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  return result;
 }
 
 async function generateLargeFile() {
   const writeStream = fs.createWriteStream(OUTPUT_FILE);
-  const totalBytes = FILE_SIZE_GB * 1024 * 1024 * 1024;
+  const totalBytes = FILE_SIZE_MB * 1024 * 1024;
   let bytesWritten = 0;
 
-  console.log(`Генерация файла размером ${FILE_SIZE_GB} ГБ...`);
+  console.log(`Генерация файла размером ${FILE_SIZE_MB} МБ...`);
 
   while (bytesWritten < totalBytes) {
-    const chunk = [];
-    let chunkSize = 0;
+    const chunkSize = Math.min(CHUNK_SIZE, totalBytes - bytesWritten);
+    const chunk = Buffer.alloc(chunkSize);
+    let offset = 0;
 
-    while (chunkSize < CHUNK_SIZE && bytesWritten < totalBytes) {
+    while (offset < chunkSize) {
       const lineLength = Math.floor(Math.random() * 95) + 5; // Случайная длина строки от 5 до 100 символов
       const line = generateRandomString(lineLength);
-      chunk.push(line);
-      chunkSize += line.length + 1; // +1 для символа новой строки
-      bytesWritten += line.length + 1;
+      const lineBuffer = Buffer.from(line + '\n');
+      offset += lineBuffer.copy(chunk, offset);
     }
 
     await new Promise((resolve, reject) => {
-      writeStream.write(chunk.join('\n') + '\n', error => {
+      writeStream.write(chunk, error => {
         if (error) reject(error);
         else resolve();
       });
     });
 
+    bytesWritten += chunkSize;
     const progress = (bytesWritten / totalBytes * 100).toFixed(2);
     console.log(`Прогресс: ${progress}%`);
   }
 
-  writeStream.end();
+  await new Promise((resolve, reject) => {
+    writeStream.end(error => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+
   console.log('Генерация файла завершена.');
 }
 
-generateLargeFile().catch(console.error);
+generateLargeFile().catch(error => {
+  console.error('Произошла ошибка при генерации файла:', error);
+});
